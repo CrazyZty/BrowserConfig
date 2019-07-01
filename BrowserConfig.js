@@ -8,24 +8,17 @@
 // @include      *
 // @run-at       document-body
 // @noframes
-// @resource     browserConfig file://D:\BrowserConfig\BrowserConfig.txt
-// @resource     browserConfigOnline http://138.128.214.184:3000/BrowserConfig.txt
+// @resource     browserConfig {线上配置文件所在地址，推荐使用线上地址 tampermonkey 会进行缓存，也可使用本地地址，线上地址示例：http://www.google.com/BrowserConfig.txt，本地地址示例：file://D:\BrowserConfig\BrowserConfig.txt}
 // @grant        unsafeWindow
 // @grant        GM_getResourceText
 // ==/UserScript==
 
 (function() {
     'use strict';
-    var browserConfigDir = "D:\BrowserConfig";
     var browserConfigText = GM_getResourceText("browserConfig");
     if (browserConfigText == null) {
-        console.log("不存在本地浏览器配置文件");
-        browserConfigText = GM_getResourceText("browserConfigOnline");
-        if (browserConfigText == null) {
-            console.log("不存在线上浏览器配置文件");
-            window.alert("不存在浏览器配置文件");
-            return;
-        }
+        console.log("不存在线上浏览器配置文件");
+        return;
     }
     var browserConfig = JSON.parse(browserConfigText);
     var webPageConfig = browserConfig.webPage;
@@ -42,13 +35,15 @@
     }
 
     // 校验系统适用性，比如某些规则只在特定系统上生效
-    var checkRuleSystemApplicable = function(checkRule, defaultConfig) {
-        var applicableSystem = getConfigData(checkRule, defaultConfig, "applicableSystem");
+    var checkRuleSystemApplicable = function(getConfigData) {
+        var applicableSystems = getConfigData("applicableSystems");
         // 为空默认全部系统适用
-        if (applicableSystem == null) {
+        if (applicableSystems == null) {
             return true;
         }
-        return applicableSystem == currentSystem;
+        return applicableSystems.find(function(applicableSystem) {
+            return applicableSystem == currentSystem;
+        }) != null;
     }
 
     // 页面重定向
@@ -86,9 +81,17 @@
         })
     }
 
-    var getConfigData = function(checkRule, defaultConfig, configName) {
-        if(checkRule != null && checkRule.config!= null) {
-            var configData = checkRule.config[configName];
+    // 从 Rule 的配置或默认配置中提取数据，优先从 Rule 中提取
+    var analysisConfigData = function(rule, systemConfig, defaultConfig, configName) {
+        var configData;
+        if(rule != null && rule.config != null) {
+            configData = rule.config[configName];
+            if (configData != null ) {
+                return configData;
+            }
+        }
+        if(systemConfig != null && systemConfig.config != null) {
+            configData = systemConfig.config[configName];
             if (configData != null ) {
                 return configData;
             }
@@ -96,57 +99,68 @@
         return defaultConfig[configName];
     }
 
-    var handleConfig = function(config, checkRule) {
+    // 根据配置信息校验规则，会自动先进行系统可用性识别
+    var checkRules = function(config, checkRule) {
         var rules = config.rules;
         var defaultConfig = config.defaultConfig;
+        var systemConfig = null;
+        if (config.applicableSystemConfig != null) {
+            systemConfig = config.applicableSystemConfig[currentSystem];
+        }
         Object.keys(rules).forEach(function(key){
-            var checkingRule = rules[key]
-            if(!checkRuleSystemApplicable(checkRule, defaultConfig)) {
+            var rule = rules[key]
+            var getConfigData = function(configName) {
+                return analysisConfigData(rule, systemConfig, defaultConfig, configName);
+            };
+            if(!checkRuleSystemApplicable(getConfigData)) {
                 return;
             }
-            return checkRule(checkingRule, defaultConfig);
+            return checkRule(rule, getConfigData);
         });
     }
 
+    // 检测当前页面是否匹配不可用 WebPage 页面配置
     var handleForbiddenWebPage = function(forbiddenWebPage) {
-        handleConfig(forbiddenWebPage, function(checkRule, defaultConfig){
-            var checkResult = checkHost(checkRule.hosts);
+        checkRules(forbiddenWebPage, function(rule, getConfigData){
+            var checkResult = checkHost(rule.hosts);
             if (checkResult == null) {
-                checkResult = checkHostRegex(checkRule.hostRegexps);
+                checkResult = checkHostRegex(rule.hostRegexps);
             }
             if (checkResult == null) {
-                checkResult = checkKeyword(checkRule.keywords);
+                checkResult = checkKeyword(rule.keywords);
             }
             if (checkResult != null) {
-                redirect(getConfigData(checkRule, defaultConfig, "redirectUrl"));
+                redirect(getConfigData("redirectUrl"));
             }
         });
     }
 
+    // 检测当前页面是否匹配受限 WebPage 页面配置
     var handlelimitedWebPage = function(limitedWebPage) {
-        handleConfig(limitedWebPage, function(checkRule, defaultConfig){
-            var checkResult = checkHost(checkRule.hosts);
+        checkRules(limitedWebPage, function(rule, getConfigData){
+            var checkResult = checkHost(rule.hosts);
             if (checkResult == null) {
-                checkResult = checkHostRegex(checkRule.hostRegexps);
+                checkResult = checkHostRegex(rule.hostRegexps);
             }
             if (checkResult == null) {
-                checkResult = checkKeyword(checkRule.keywords);
+                checkResult = checkKeyword(rule.keywords);
             }
             if (checkResult != null) {
-                var availableTime = getConfigData(checkRule, defaultConfig, "availableTime");
+                var availableTime = getConfigData("availableTime");
                 if (availableTime !=null && availableTime == new Date().getDay()) {
-                    console.log(getConfigData(checkRule, defaultConfig, "availableTimeAlert"));
+                    console.log(getConfigData("availableTimeAlert"));
                     return;
                 }
-                redirect(getConfigData(checkRule, defaultConfig, "redirectUrl"));
+                redirect(getConfigData("redirectUrl"));
             }
         });
     }
 
+    // 浏览器可用时间校验
     var handleTime = function(timeConfig) {
-        handleConfig(timeConfig, function(checkRule, defaultConfig){
-            var beginTime = checkRule.beginTime.split(":");
-            var endTime = checkRule.endTime.split(":");
+        checkRules(timeConfig, function(rule, getConfigData){
+            var beginTime = rule.beginTime.split(":");
+            var endTime = rule.endTime.split(":");
             var beginTimeHour = beginTime[0];
             var beginTimeMinute = beginTime[1];
             var endTimeHour = endTime[0];
@@ -156,7 +170,7 @@
             var currentMinute = date.getMinutes();
             if ((currentHour < beginTimeHour) || (currentHour == beginTimeHour && currentMinute <= beginTimeMinute) ||
                 (currentHour > endTimeHour) || (currentHour == endTimeHour && currentMinute >= endTimeMinute)) {
-                window.alert(getConfigData(checkRule, defaultConfig, "alertMessage"));
+                window.alert(getConfigData("alertMessage"));
             }
         });
     }
