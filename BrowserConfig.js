@@ -90,8 +90,8 @@
                 return configData;
             }
         }
-        if(systemConfig != null && systemConfig.config != null) {
-            configData = systemConfig.config[configName];
+        if(systemConfig != null) {
+            configData = systemConfig[configName];
             if (configData != null ) {
                 return configData;
             }
